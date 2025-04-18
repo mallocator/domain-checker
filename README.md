@@ -36,7 +36,7 @@ Alerts are delivered via email using your SMTP server (e.g., Gmail App Password)
 
 ## Running Locally
 
-1. **Download** a prebuilt binary from the [Releases](https://github.com/youruser/domain-checker/releases) page (replace `youruser`).
+1. **Download** a prebuilt binary from the [Releases](https://github.com/mallocator/domain-checker/releases) page.
 
 2. **Set your environment variables**:
    ```bash
@@ -69,7 +69,7 @@ Logs will show each domain check and notification status.
 The Docker container will execute just like the binary, but with the added benefit of isolation and easy deployment.
 This will not run a long-running service, but rather a one-off check. You can schedule it with cron or Synology Task Scheduler.
 
-1. **Pull your container** (replace `youruser`):
+1. **Pull your container**:
    ```bash
    docker pull mallox/domain-checker:latest
    ```
@@ -88,7 +88,7 @@ This will not run a long-running service, but rather a one-off check. You can sc
      -e EMAIL_TO=alerts@you.com \
      -e THRESHOLD_DAYS=7 \
      -e DEBUG=true \
-     youruser/domain-checker:latest
+     mallox/domain-checker:latest
    ```
 
 3. *(Optional)* **Schedule** via cron or Synology Task Scheduler using the same Docker command.
@@ -144,7 +144,7 @@ Envs will override any JSON values.
 
 - **Build Docker image**:
   ```bash
-  docker build -t youruser/domain-checker:latest .
+  docker build -t mallox/domain-checker:latest .
   ```
 
 ## Troubleshooting

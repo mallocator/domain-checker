@@ -54,7 +54,6 @@ func init() {
 	loadFileConfig(os.Getenv("CONFIG_FILE"))
 	overrideWithEnv()
 	initLogger()
-	log.Infof("Final config: %+v", cfg)
 	cleanupState()
 }
 

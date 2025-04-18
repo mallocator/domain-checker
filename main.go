@@ -177,22 +177,35 @@ func processDomain(domain string) {
 		return
 	}
 
-	raw := retryWHOIS(domain)
-	if raw == "" {
-		return
-	}
-	parsed, err := whoisparser.Parse(raw)
-	if err != nil {
-		log.Warnf("WHOIS parse failed for %s: %v", domain, err)
-		return
-	}
+	// Check if we already have a valid expiration date
+	hasValidExpiration := !state.Expiration.IsZero() && state.Expiration.After(time.Now())
 
-	expDate, err := parseExpiration(parsed.Domain.ExpirationDate)
-	if err != nil {
-		log.Warnf("Invalid expiration date %q for %s", parsed.Domain.ExpirationDate, domain)
-		return
+	if !hasValidExpiration {
+		// Only do WHOIS lookup if we don't have valid expiration info
+		raw := retryWHOIS(domain)
+		if raw == "" {
+			return
+		}
+		parsed, err := whoisparser.Parse(raw)
+		if err != nil {
+			log.Warnf("WHOIS parse failed for %s: %v", domain, err)
+			return
+		}
+
+		expDate, err := parseExpiration(parsed.Domain.ExpirationDate)
+		if err != nil {
+			log.Warnf("Invalid expiration date %q for %s", parsed.Domain.ExpirationDate, domain)
+			return
+		}
+
+		// Save the expiration date in the state
+		state.Expiration = expDate
+		saveState(domain, state)
+		handleExpiry(domain, expDate, &state)
+	} else {
+		// Use the cached expiration date
+		handleExpiry(domain, state.Expiration, &state)
 	}
-	handleExpiry(domain, expDate, &state)
 }
 
 // handleAvailable processes available domain notifications

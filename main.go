@@ -1,3 +1,5 @@
+// Package main provides a domain monitoring tool that checks for domain availability
+// and expiration dates, sending notifications when domains are available or about to expire.
 package main
 
 import (
@@ -22,34 +24,71 @@ import (
 
 // Config holds application settings
 type Config struct {
-	Domains       []string      `json:"domains"`
-	ThresholdDays int           `json:"threshold_days"`
-	StateDir      string        `json:"state_dir"`
-	SMTPHost      string        `json:"smtp_host"`
-	SMTPPort      int           `json:"smtp_port"`
-	SMTPUser      string        `json:"smtp_user"`
-	SMTPPass      string        `json:"smtp_pass"`
-	EmailFrom     string        `json:"email_from"`
-	EmailTo       string        `json:"email_to"`
-	Retries       int           `json:"retries"`
-	Backoff       time.Duration `json:"backoff"` // initial backoff
-	Concurrency   int           `json:"concurrency"`
-	Timeout       time.Duration `json:"timeout"` // per lookup timeout
+	// List of domains to monitor
+	Domains []string `json:"domains"`
+
+	// Number of days before expiration to send notification
+	ThresholdDays int `json:"threshold_days"`
+
+	// Directory to store state files
+	StateDir string `json:"state_dir"`
+
+	// SMTP configuration for email notifications
+	SMTPHost  string `json:"smtp_host"`
+	SMTPPort  int    `json:"smtp_port"`
+	SMTPUser  string `json:"smtp_user"`
+	SMTPPass  string `json:"smtp_pass"`
+	EmailFrom string `json:"email_from"`
+	EmailTo   string `json:"email_to"`
+
+	// Retry configuration
+	Retries int           `json:"retries"`
+	Backoff time.Duration `json:"backoff"` // initial backoff duration
+
+	// Concurrency and timeout settings
+	Concurrency int           `json:"concurrency"`
+	Timeout     time.Duration `json:"timeout"` // per lookup timeout
 }
 
 // DomainState holds per-domain flags and expiry
 type DomainState struct {
-	Expiration        time.Time `json:"expiration"`
-	NotifiedExpiry    bool      `json:"notified_expiry"`
-	NotifiedAvailable bool      `json:"notified_available"`
+	// Domain expiration date
+	Expiration time.Time `json:"expiration"`
+
+	// Whether we've already notified about expiry
+	NotifiedExpiry bool `json:"notified_expiry"`
+
+	// Whether we've already notified about availability
+	NotifiedAvailable bool `json:"notified_available"`
 }
 
+// Function types for easier testing
+type (
+	NotifyFunc         func(domain, message string)
+	CheckAvailableFunc func(domain string) (bool, error)
+	RetryWHOISFunc     func(domain string) string
+)
+
+// Global variables
 var (
 	cfg Config
 	log = logrus.New()
 )
 
+// Function variables that can be replaced in tests
+var (
+	notifyFn         NotifyFunc
+	checkAvailableFn CheckAvailableFunc
+	retryWHOISFn     RetryWHOISFunc
+)
+
 func init() {
+	// Initialize function variables
+	notifyFn = notify
+	checkAvailableFn = checkAvailable
+	retryWHOISFn = retryWHOIS
+
+	// Initialize configuration
 	initDefaults()
 	loadFileConfig(os.Getenv("CONFIG_FILE"))
 	overrideWithEnv()
@@ -141,36 +180,57 @@ func setDuration(field *time.Duration, env string) {
 	}
 }
 
+// processDomains processes all domains with controlled concurrency
+func processDomains(domains []string, concurrency int) {
+	// Create a semaphore to limit concurrency
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	// Process each domain concurrently, but limited by the semaphore
+	for _, d := range domains {
+		domain := strings.TrimSpace(d)
+		if domain == "" {
+			log.Debugf("Skipping empty domain")
+			continue
+		}
+
+		wg.Add(1)
+		sem <- struct{}{} // Acquire semaphore
+
+		go func(dom string) {
+			defer wg.Done()
+			defer func() { <-sem }() // Release semaphore
+
+			processDomain(dom)
+		}(domain)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+}
+
 func main() {
+	// Ensure state directory exists
 	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
 		log.Fatalf("Failed to create state directory: %v", err)
 	}
 
-	sem := make(chan struct{}, cfg.Concurrency)
-	var wg sync.WaitGroup
+	log.Infof("Starting domain checker with %d domains", len(cfg.Domains))
 
-	for _, d := range cfg.Domains {
-		domain := strings.TrimSpace(d)
-		if domain == "" {
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(dom string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			processDomain(dom)
-		}(domain)
-	}
-	wg.Wait()
+	// Process all domains with configured concurrency
+	processDomains(cfg.Domains, cfg.Concurrency)
+
+	log.Infof("Domain checking completed")
 }
 
-// processDomain checks availability and expiry
+// processDomain checks availability and expiry for a single domain
 func processDomain(domain string) {
 	log.Infof("Checking %s", domain)
 	state := loadState(domain)
 
-	if available, err := checkAvailable(domain); err != nil {
+	// First check if the domain is available
+	available, err := checkAvailableFn(domain)
+	if err != nil {
 		log.Warnf("DNS SOA lookup error for %s: %v", domain, err)
 	} else if available {
 		handleAvailable(domain, &state)
@@ -182,10 +242,12 @@ func processDomain(domain string) {
 
 	if !hasValidExpiration {
 		// Only do WHOIS lookup if we don't have valid expiration info
-		raw := retryWHOIS(domain)
+		raw := retryWHOISFn(domain)
 		if raw == "" {
+			log.Warnf("Failed to get WHOIS data for %s", domain)
 			return
 		}
+
 		parsed, err := whoisparser.Parse(raw)
 		if err != nil {
 			log.Warnf("WHOIS parse failed for %s: %v", domain, err)
@@ -212,7 +274,7 @@ func processDomain(domain string) {
 func handleAvailable(domain string, state *DomainState) {
 	log.Infof("→ %s is available", domain)
 	if !state.NotifiedAvailable {
-		notify(domain, fmt.Sprintf("Domain %s is now available!", domain))
+		notifyFn(domain, fmt.Sprintf("Domain %s is now available!", domain))
 		state.NotifiedAvailable = true
 		saveState(domain, *state)
 	}
@@ -223,42 +285,55 @@ func handleExpiry(domain string, expDate time.Time, state *DomainState) {
 	log.Infof("→ %s expires at %s", domain, expDate.Format(time.RFC3339))
 	daysLeft := int(time.Until(expDate).Hours() / 24)
 	if daysLeft <= cfg.ThresholdDays && !state.NotifiedExpiry {
-		notify(domain, fmt.Sprintf("Domain %s expires in %d days", domain, daysLeft))
+		notifyFn(domain, fmt.Sprintf("Domain %s expires in %d days", domain, daysLeft))
 		state.NotifiedExpiry = true
 		saveState(domain, *state)
 	}
 }
 
 // checkAvailable does DNS SOA lookup with context timeout
+// Returns true if the domain is available (no SOA record found)
 func checkAvailable(domain string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
+
 	c := dns.Client{}
 	m := dns.Msg{}
 	m.SetQuestion(dns.Fqdn(domain), dns.TypeSOA)
+
 	conf, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to read DNS config: %w", err)
 	}
+
 	resp, _, err := c.ExchangeContext(ctx, &m, net.JoinHostPort(conf.Servers[0], conf.Port))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("DNS query failed: %w", err)
 	}
+
+	// Domain is available if there's no SOA record
 	return len(resp.Answer) == 0, nil
 }
 
-// retryWHOIS performs WHOIS lookup with retries and backoff
+// retryWHOIS performs WHOIS lookup with retries and exponential backoff
+// Returns the raw WHOIS data or empty string if all retries failed
 func retryWHOIS(domain string) string {
 	var raw string
 	var err error
+
 	for i, backoff := 0, cfg.Backoff; i < cfg.Retries; i, backoff = i+1, backoff*2 {
 		raw, err = whois.Whois(domain)
 		if err == nil {
 			return raw
 		}
+
 		log.Debugf("WHOIS retry %d for %s: %v", i+1, domain, err)
-		time.Sleep(backoff + time.Duration(rand.Intn(1000))*time.Millisecond)
+
+		// Add jitter to backoff to prevent thundering herd
+		jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+		time.Sleep(backoff + jitter)
 	}
+
 	log.Warnf("WHOIS failed for %s after %d retries: %v", domain, cfg.Retries, err)
 	return ""
 }
@@ -356,18 +431,38 @@ func cleanupState() {
 	}
 }
 
-// notify sends an email or logs skip
+// notify sends an email notification or logs if SMTP is not configured
+// It takes the domain name and message to send
 func notify(domain, message string) {
 	log.Infof("Notification for %s: %s", domain, message)
+
+	// Check if SMTP is configured
 	if cfg.SMTPHost == "" || cfg.EmailFrom == "" || cfg.EmailTo == "" {
 		log.Infof("SMTP not configured, skipping email send")
 		return
 	}
+
+	// Prepare email
 	auth := smtp.PlainAuth("", cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPHost)
-	msg := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n",
-		cfg.EmailFrom, cfg.EmailTo, message, message))
+
+	// Format email with headers and body
+	msg := []byte(fmt.Sprintf(
+		"From: %s\r\n"+
+			"To: %s\r\n"+
+			"Subject: %s\r\n"+
+			"\r\n"+
+			"%s\r\n",
+		cfg.EmailFrom,
+		cfg.EmailTo,
+		message,
+		message,
+	))
+
+	// Send email
 	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
 	if err := smtp.SendMail(addr, auth, cfg.EmailFrom, []string{cfg.EmailTo}, msg); err != nil {
 		log.Errorf("Failed to send mail for %s: %v", domain, err)
+	} else {
+		log.Infof("Email notification sent successfully for %s", domain)
 	}
 }

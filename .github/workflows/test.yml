@@ -18,27 +18,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Restore Go modules
-        id: go-cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
       - uses: actions/checkout@v3
 
       - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.24'
-
-      - name: Download modules (if cache miss)
-        if: steps.go-cache.outputs.cache-hit != 'true'
-        run: go mod download
+        uses: actions/setup-go@v5
 
       - name: Run tests
         run: go test -v ./...

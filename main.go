@@ -19,7 +19,6 @@ import (
 	"github.com/likexian/whois"
 	whoisparser "github.com/likexian/whois-parser"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // Config holds application settings
@@ -69,10 +68,43 @@ type (
 	RetryWHOISFunc     func(domain string) string
 )
 
+// Logger is a simple logging interface that replaces logrus
+type Logger struct {
+	debugEnabled bool
+}
+
+// Debugf logs debug messages when debug is enabled
+func (l *Logger) Debugf(format string, args ...interface{}) {
+	if l.debugEnabled {
+		fmt.Fprintf(os.Stderr, "DEBUG: "+format+"\n", args...)
+	}
+}
+
+// Infof logs informational messages
+func (l *Logger) Infof(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stdout, "INFO: "+format+"\n", args...)
+}
+
+// Warnf logs warning messages
+func (l *Logger) Warnf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "WARN: "+format+"\n", args...)
+}
+
+// Errorf logs error messages
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "ERROR: "+format+"\n", args...)
+}
+
+// Fatalf logs fatal messages and exits the program
+func (l *Logger) Fatalf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "FATAL: "+format+"\n", args...)
+	os.Exit(1)
+}
+
 // Global variables
 var (
 	cfg Config
-	log = logrus.New()
+	log = &Logger{}
 )
 
 // Function variables that can be replaced in tests
@@ -141,11 +173,7 @@ func overrideWithEnv() {
 
 // initLogger configures log level based on DEBUG env
 func initLogger() {
-	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
-		log.SetLevel(logrus.DebugLevel)
-	} else {
-		log.SetLevel(logrus.InfoLevel)
-	}
+	log.debugEnabled = strings.ToLower(os.Getenv("DEBUG")) == "true"
 }
 
 // setStringList sets a []string from env split by sep

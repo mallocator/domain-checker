@@ -27,14 +27,16 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Build binary
         run: |
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -ldflags "-X main.version=${{ github.ref_name }}" \
-            -o ${BIN_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}$ext
+            go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -trimpath -o ${BIN_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}$ext
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v4

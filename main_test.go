@@ -34,7 +34,11 @@ func TestStateLoadSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Errorf("failed to remove temp directory: %v", err)
+		}
+	}()
 	cfg.StateDir = tmpDir
 	domain := "test.com"
 	stIn := DomainState{Expiration: time.Now(), NotifiedAvailable: true}
@@ -51,8 +55,14 @@ func TestConfigFile(t *testing.T) {
 	if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(cfgFile)
-	os.Setenv("CONFIG_FILE", cfgFile)
+	defer func() {
+		if err := os.Remove(cfgFile); err != nil {
+			t.Errorf("failed to remove temp directory: %v", err)
+		}
+	}()
+	if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
 	initDefaults()
 	loadFileConfig(cfgFile)
 	overrideWithEnv()

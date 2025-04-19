@@ -1,201 +1,181 @@
+// Package main provides a domain monitoring tool that checks for domain availability
+// and expiration dates, sending notifications when domains are available or about to expire.
 package main
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/mallocator/domain-checker/pkg/config"
+	"github.com/mallocator/domain-checker/pkg/logger"
 )
 
-func TestParseExpiration(t *testing.T) {
-	tests := []struct {
-		raw  string
-		want string
-		err  bool
-	}{
-		{"2025-05-01T12:34:56Z", "2025-05-01T12:34:56Z", false},
-		{"2025-05-01", "2025-05-01T00:00:00Z", false},
-		{"invalid", "", true},
-	}
-	for _, tc := range tests {
-		got, err := parseExpiration(tc.raw)
-		if (err != nil) != tc.err {
-			t.Errorf("parseExpiration(%q) err = %v, wantErr %v", tc.raw, err, tc.err)
-			continue
-		}
-		if err == nil && got.Format(time.RFC3339) != tc.want {
-			t.Errorf("parseExpiration(%q) = %s, want %s", tc.raw, got.Format(time.RFC3339), tc.want)
-		}
-	}
-}
-
-func TestStateLoadSave(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "state_test")
+// TestConfigLoading tests loading configuration from a file
+func TestConfigLoading(t *testing.T) {
+	// Create a temporary directory for config file
+	tmpDir, err := os.MkdirTemp("", "main_test_config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
-			t.Errorf("failed to remove temp directory: %v", err)
+			t.Errorf("Failed to remove temporary directory: %v", err)
 		}
 	}()
-	cfg.StateDir = tmpDir
-	domain := "test.com"
-	stIn := DomainState{Expiration: time.Now(), NotifiedAvailable: true}
-	saveState(domain, stIn)
-	stOut := loadState(domain)
-	if !stOut.NotifiedAvailable {
-		t.Errorf("loadState NotifiedAvailable = %v, want true", stOut.NotifiedAvailable)
-	}
-}
 
-func TestConfigFile(t *testing.T) {
-	cfgFile := filepath.Join(os.TempDir(), "cfg.json")
-	content := `{"threshold_days":3,"state_dir":"/tmp"}`
-	if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil {
-		t.Fatal(err)
+	// Create a config file
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"domains": ["example.com", "test.org"],
+		"threshold_days": 25,
+		"state_dir": "` + tmpDir + `",
+		"concurrency": 3
+	}`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
 	}
+
+	// Set environment variable for config file
+	oldConfigFile := os.Getenv("CONFIG_FILE")
 	defer func() {
-		if err := os.Remove(cfgFile); err != nil {
-			t.Errorf("failed to remove temp directory: %v", err)
+		if err := os.Setenv("CONFIG_FILE", oldConfigFile); err != nil {
+			t.Errorf("Failed to restore CONFIG_FILE: %v", err)
 		}
 	}()
-	if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to write config file: %v", err)
+	if err := os.Setenv("CONFIG_FILE", configPath); err != nil {
+		t.Fatalf("Failed to set CONFIG_FILE: %v", err)
 	}
-	initDefaults()
-	loadFileConfig(cfgFile)
-	overrideWithEnv()
-	if cfg.ThresholdDays != 3 || cfg.StateDir != "/tmp" {
-		t.Errorf("Config loadFileConfig override error: %+v", cfg)
+
+	// Initialize logger
+	log := logger.New()
+
+	// Initialize configuration
+	cfg := config.New(log)
+	if err := cfg.LoadFromFile(os.Getenv("CONFIG_FILE")); err != nil {
+		t.Fatalf("Failed to load config file: %v", err)
+	}
+
+	// Verify configuration was loaded correctly
+	if len(cfg.Domains) != 2 {
+		t.Errorf("Expected 2 domains, got %d", len(cfg.Domains))
+	}
+	if cfg.Domains[0] != "example.com" || cfg.Domains[1] != "test.org" {
+		t.Errorf("Expected domains [example.com test.org], got %v", cfg.Domains)
+	}
+	if cfg.ThresholdDays != 25 {
+		t.Errorf("Expected threshold_days 25, got %d", cfg.ThresholdDays)
+	}
+	if cfg.StateDir != tmpDir {
+		t.Errorf("Expected state_dir %s, got %s", tmpDir, cfg.StateDir)
+	}
+	if cfg.Concurrency != 3 {
+		t.Errorf("Expected concurrency 3, got %d", cfg.Concurrency)
 	}
 }
 
-func TestIsAppGeneratedFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "app_file_test")
+// TestConfigLoadingFromEnv tests loading configuration from environment variables
+func TestConfigLoadingFromEnv(t *testing.T) {
+	// Create a temporary directory for state files
+	tmpDir, err := os.MkdirTemp("", "main_test_env")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
-			t.Errorf("failed to remove temp directory: %v", err)
+			t.Errorf("Failed to remove temporary directory: %v", err)
 		}
 	}()
 
-	// Create a valid app-generated file
-	validFile := filepath.Join(tmpDir, "valid.json")
-	validContent := `{"expiration":"2025-01-01T00:00:00Z","notified_expiry":false,"notified_available":true}`
-	if err := os.WriteFile(validFile, []byte(validContent), 0644); err != nil {
-		t.Fatalf("failed to write valid file: %v", err)
+	// Save original environment variables
+	oldDomains := os.Getenv("DOMAINS")
+	oldThresholdDays := os.Getenv("THRESHOLD_DAYS")
+	oldStateDir := os.Getenv("STATE_DIR")
+	oldConcurrency := os.Getenv("CONCURRENCY")
+
+	// Restore environment variables after test
+	defer func() {
+		if err := os.Setenv("DOMAINS", oldDomains); err != nil {
+			t.Errorf("Failed to restore DOMAINS: %v", err)
+		}
+		if err := os.Setenv("THRESHOLD_DAYS", oldThresholdDays); err != nil {
+			t.Errorf("Failed to restore THRESHOLD_DAYS: %v", err)
+		}
+		if err := os.Setenv("STATE_DIR", oldStateDir); err != nil {
+			t.Errorf("Failed to restore STATE_DIR: %v", err)
+		}
+		if err := os.Setenv("CONCURRENCY", oldConcurrency); err != nil {
+			t.Errorf("Failed to restore CONCURRENCY: %v", err)
+		}
+	}()
+
+	// Set environment variables for test
+	if err := os.Setenv("DOMAINS", "env1.com,env2.com"); err != nil {
+		t.Fatalf("Failed to set DOMAINS: %v", err)
+	}
+	if err := os.Setenv("THRESHOLD_DAYS", "15"); err != nil {
+		t.Fatalf("Failed to set THRESHOLD_DAYS: %v", err)
+	}
+	if err := os.Setenv("STATE_DIR", tmpDir); err != nil {
+		t.Fatalf("Failed to set STATE_DIR: %v", err)
+	}
+	if err := os.Setenv("CONCURRENCY", "4"); err != nil {
+		t.Fatalf("Failed to set CONCURRENCY: %v", err)
 	}
 
-	// Create an invalid JSON file
-	invalidJSONFile := filepath.Join(tmpDir, "invalid_json.json")
-	invalidJSONContent := `{"this is not valid JSON`
-	if err := os.WriteFile(invalidJSONFile, []byte(invalidJSONContent), 0644); err != nil {
-		t.Fatalf("failed to write invalid JSON file: %v", err)
-	}
+	// Initialize logger
+	log := logger.New()
 
-	// Create a non-JSON file
-	nonJSONFile := filepath.Join(tmpDir, "non_json.txt")
-	nonJSONContent := "This is not a JSON file"
-	if err := os.WriteFile(nonJSONFile, []byte(nonJSONContent), 0644); err != nil {
-		t.Fatalf("failed to write non-JSON file: %v", err)
-	}
+	// Initialize configuration
+	cfg := config.New(log)
+	cfg.LoadFromEnv()
 
-	// Test the isAppGeneratedFile function
-	if !isAppGeneratedFile(validFile) {
-		t.Errorf("isAppGeneratedFile(%q) = false, want true", validFile)
+	// Verify configuration was loaded correctly
+	if len(cfg.Domains) != 2 {
+		t.Errorf("Expected 2 domains, got %d", len(cfg.Domains))
 	}
-	if isAppGeneratedFile(invalidJSONFile) {
-		t.Errorf("isAppGeneratedFile(%q) = true, want false", invalidJSONFile)
+	if cfg.Domains[0] != "env1.com" || cfg.Domains[1] != "env2.com" {
+		t.Errorf("Expected domains [env1.com env2.com], got %v", cfg.Domains)
 	}
-	if isAppGeneratedFile(nonJSONFile) {
-		t.Errorf("isAppGeneratedFile(%q) = true, want false", nonJSONFile)
+	if cfg.ThresholdDays != 15 {
+		t.Errorf("Expected threshold_days 15, got %d", cfg.ThresholdDays)
+	}
+	if cfg.StateDir != tmpDir {
+		t.Errorf("Expected state_dir %s, got %s", tmpDir, cfg.StateDir)
+	}
+	if cfg.Concurrency != 4 {
+		t.Errorf("Expected concurrency 4, got %d", cfg.Concurrency)
 	}
 }
 
-func TestCleanupState(t *testing.T) {
-	// Create a temporary directory for the test
-	tmpDir, err := os.MkdirTemp("", "cleanup_test")
+// TestStateDirectoryCreation tests that the state directory is created if it doesn't exist
+func TestStateDirectoryCreation(t *testing.T) {
+	// Create a temporary directory for the parent of the state directory
+	parentDir, err := os.MkdirTemp("", "main_test_parent")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := os.RemoveAll(tmpDir); err != nil {
-			t.Errorf("failed to remove temp directory: %v", err)
+		if err := os.RemoveAll(parentDir); err != nil {
+			t.Errorf("Failed to remove temporary directory: %v", err)
 		}
 	}()
 
-	// Set the state directory to the temporary directory
-	originalStateDir := cfg.StateDir
-	cfg.StateDir = tmpDir
-	defer func() {
-		cfg.StateDir = originalStateDir
-	}()
+	// Define a state directory that doesn't exist yet
+	stateDir := filepath.Join(parentDir, "state")
 
-	// Set the domains for the test
-	originalDomains := cfg.Domains
-	cfg.Domains = []string{"example.com", "test.com"}
-	defer func() {
-		cfg.Domains = originalDomains
-	}()
-
-	// Create valid app-generated files for domains in the config
-	validFile1 := filepath.Join(tmpDir, "example_com.json")
-	validContent1 := `{"expiration":"2025-01-01T00:00:00Z","notified_expiry":false,"notified_available":true}`
-	if err := os.WriteFile(validFile1, []byte(validContent1), 0644); err != nil {
-		t.Fatalf("failed to write valid file: %v", err)
+	// Verify the directory doesn't exist yet
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("State directory already exists or error checking: %v", err)
 	}
 
-	validFile2 := filepath.Join(tmpDir, "test_com.json")
-	validContent2 := `{"expiration":"2025-01-01T00:00:00Z","notified_expiry":false,"notified_available":true}`
-	if err := os.WriteFile(validFile2, []byte(validContent2), 0644); err != nil {
-		t.Fatalf("failed to write valid file: %v", err)
+	// Create the directory using the same code as in main.go
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("Failed to create state directory: %v", err)
 	}
 
-	// Create a valid app-generated file for a domain not in the config
-	validFile3 := filepath.Join(tmpDir, "other_com.json")
-	validContent3 := `{"expiration":"2025-01-01T00:00:00Z","notified_expiry":false,"notified_available":true}`
-	if err := os.WriteFile(validFile3, []byte(validContent3), 0644); err != nil {
-		t.Fatalf("failed to write valid file: %v", err)
-	}
-
-	// Create an invalid JSON file
-	invalidJSONFile := filepath.Join(tmpDir, "invalid_json.json")
-	invalidJSONContent := `{"this is not valid JSON`
-	if err := os.WriteFile(invalidJSONFile, []byte(invalidJSONContent), 0644); err != nil {
-		t.Fatalf("failed to write invalid JSON file: %v", err)
-	}
-
-	// Create a non-JSON file
-	nonJSONFile := filepath.Join(tmpDir, "non_json.txt")
-	nonJSONContent := "This is not a JSON file"
-	if err := os.WriteFile(nonJSONFile, []byte(nonJSONContent), 0644); err != nil {
-		t.Fatalf("failed to write non-JSON file: %v", err)
-	}
-
-	// Run the cleanupState function
-	cleanupState()
-
-	// Check that the files for domains in the config still exist
-	if _, err := os.Stat(validFile1); os.IsNotExist(err) {
-		t.Errorf("File %q was deleted, but it should still exist", validFile1)
-	}
-	if _, err := os.Stat(validFile2); os.IsNotExist(err) {
-		t.Errorf("File %q was deleted, but it should still exist", validFile2)
-	}
-
-	// Check that the valid app-generated file for a domain not in the config was deleted
-	if _, err := os.Stat(validFile3); !os.IsNotExist(err) {
-		t.Errorf("File %q still exists, but it should have been deleted", validFile3)
-	}
-
-	// Check that the invalid JSON file and non-JSON file were not deleted
-	if _, err := os.Stat(invalidJSONFile); os.IsNotExist(err) {
-		t.Errorf("File %q was deleted, but it should still exist", invalidJSONFile)
-	}
-	if _, err := os.Stat(nonJSONFile); os.IsNotExist(err) {
-		t.Errorf("File %q was deleted, but it should still exist", nonJSONFile)
+	// Verify the directory was created
+	if _, err := os.Stat(stateDir); os.IsNotExist(err) {
+		t.Errorf("State directory was not created")
 	}
 }

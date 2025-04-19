@@ -10,7 +10,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code and build the binary
-COPY main.go ./
+COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o /checker && \
     upx --best --lzma /checker
 
